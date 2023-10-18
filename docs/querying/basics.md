@@ -90,7 +90,9 @@ Examples:
 Instant vector selectors allow the selection of a set of time series and a
 single sample value for each at a given timestamp (instant): in the simplest
 form, only a metric name is specified. This results in an instant vector
-containing elements for all time series that have this metric name.
+containing elements for all time series that have this metric name. The
+most recent value for each metric is selected so long as the sample does
+not exceed the [staleness threshold](#Staleness).
 
 This example selects all time series that have the `http_requests_total` metric
 name:
@@ -152,6 +154,9 @@ A workaround for this restriction is to use the `__name__` label:
 
 All regular expressions in Prometheus use [RE2
 syntax](https://github.com/google/re2/wiki/Syntax).
+
+It is not possible to specify a specific time or age in PromQL when querying instant vectors,
+though [some Prometheus API endpoints support parameters for searching for instants back in time](api.md#instant-queries).
 
 ### Range Vector Selectors
 
