@@ -25,6 +25,7 @@ export enum aggregationType {
   bottomk = "bottomk",
   topk = "topk",
   quantile = "quantile",
+  latestK = "latestk",
   limitK = "limitk",
   limitRatio = "limit_ratio",
 }

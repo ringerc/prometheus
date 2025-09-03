@@ -430,6 +430,62 @@ eval instant at 50m limit_ratio(NaN, non_existent)
 
 clear
 
+# Tests for latestk
+load 1m
+	rsrc_state{rsrc="a", state="starting"}      1x2
+	rsrc_state{rsrc="a", state="running"}       _x2 1x48 _x50
+	rsrc_state{rsrc="a", state="terminating"}   _x50 1x10
+	rsrc_state{rsrc="b", state="running"}       1x80
+	rsrc_state{rsrc="c", state="starting"}      1x2 0x98
+	rsrc_state{rsrc="c", state="running"}       0x2 1x48 0x50
+	rsrc_state{rsrc="c", state="terminating"}   0x50 1x10
+	ignore_histogram{rsrc="h", state="any"} {{schema:0 sum:10 count:10}}x11
+	ignore_histogram{rsrc="b", state="running"} {{schema:0 sum:10 count:10}}x100
+
+# latestk(...) retains __name__
+eval instant at 1m group by (__name__) (latestk(1, rsrc_state{} == 1) by (rsrc))
+     {__name__="rsrc_state"} 1
+
+eval instant at 1m latestk(1, rsrc_state{} == 1) by (rsrc)
+     {__name__="rsrc_state", rsrc="a", state="starting"} 1
+     {__name__="rsrc_state", rsrc="b", state="running"} 1
+     {__name__="rsrc_state", rsrc="c", state="starting"} 1
+
+# The {rsrc="a", state="starting"} state should still be visible in the lookback window
+# at t=4m, but should be filtered out by latestk() since its timestamp ends at 2m,
+# and the state="running" series timestamp has samples at 3m and 4m
+
+eval instant at 4m latestk(1, rsrc_state{} == 1) by (rsrc)
+     {__name__="rsrc_state", rsrc="a", state="running"} 1
+     {__name__="rsrc_state", rsrc="b", state="running"} 1
+     {__name__="rsrc_state", rsrc="c", state="running"} 1
+
+# if we omit the == 1, we can still query series that don't emit 0-valued data
+# for the inactive states
+eval instant at 4m latestk(1, rsrc_state{rsrc=~"a|b"} == 1) by (rsrc)
+     {__name__="rsrc_state", rsrc="a", state="running"} 1
+     {__name__="rsrc_state", rsrc="b", state="running"} 1
+
+eval instant at 55m latestk(1, rsrc_state{} == 1) by (rsrc)
+     {__name__="rsrc_state", rsrc="a", state="terminating"} 1
+     {__name__="rsrc_state", rsrc="b", state="running"} 1
+     {__name__="rsrc_state", rsrc="c", state="terminating"} 1
+
+eval instant at 79m latestk(1, rsrc_state{} == 1) by (rsrc)
+     {__name__="rsrc_state", rsrc="b", state="running"} 1
+
+eval instant at 82m latestk(1, rsrc_state{} == 1) by (rsrc)
+     {__name__="rsrc_state", rsrc="b", state="running"} 1
+
+eval instant at 99m latestk(1, rsrc_state{} == 1) by (rsrc)
+     # empty
+
+eval instant at 99m latestk(1, ignore_histogram) by (rsrc)
+     expect info
+     #empty
+
+clear
+
 # Tests for count_values.
 load 5m
 	version{job="api-server", instance="0", group="production"}	6

@@ -1414,7 +1414,7 @@ func (ev *evaluator) rangeEvalAgg(ctx context.Context, aggExpr *parser.Aggregate
 		index, ok := groupToResultIndex[groupingKey]
 		// Add a new group if it doesn't exist.
 		if !ok {
-			if aggExpr.Op != parser.TOPK && aggExpr.Op != parser.BOTTOMK && aggExpr.Op != parser.LIMITK && aggExpr.Op != parser.LIMIT_RATIO {
+			if aggExpr.Op != parser.TOPK && aggExpr.Op != parser.BOTTOMK && aggExpr.Op != parser.LIMITK && aggExpr.Op != parser.LIMIT_RATIO && aggExpr.Op != parser.LATESTK {
 				m := generateGroupingLabels(enh, series.Metric, aggExpr.Without, sortedGrouping)
 				result = append(result, Series{Metric: m})
 			}
@@ -1429,7 +1429,7 @@ func (ev *evaluator) rangeEvalAgg(ctx context.Context, aggExpr *parser.Aggregate
 	var seriess map[uint64]Series
 
 	switch aggExpr.Op {
-	case parser.TOPK, parser.BOTTOMK, parser.LIMITK:
+	case parser.TOPK, parser.BOTTOMK, parser.LIMITK, parser.LATESTK:
 		// Return early if all k values are less than one.
 		if params.Max() < 1 {
 			return nil, annos
@@ -1485,7 +1485,7 @@ func (ev *evaluator) rangeEvalAgg(ctx context.Context, aggExpr *parser.Aggregate
 		enh.Ts = ts
 		var ws annotations.Annotations
 		switch aggExpr.Op {
-		case parser.TOPK, parser.BOTTOMK, parser.LIMITK, parser.LIMIT_RATIO:
+		case parser.TOPK, parser.BOTTOMK, parser.LIMITK, parser.LIMIT_RATIO, parser.LATESTK:
 			result, ws = ev.aggregationK(aggExpr, fParam, inputMatrix, seriesToResult, groups, enh, seriess)
 			// If this could be an instant query, shortcut so as not to change sort order.
 			if ev.startTimestamp == ev.endTimestamp {
@@ -1505,7 +1505,7 @@ func (ev *evaluator) rangeEvalAgg(ctx context.Context, aggExpr *parser.Aggregate
 
 	// Assemble the output matrix. By the time we get here we know we don't have too many samples.
 	switch aggExpr.Op {
-	case parser.TOPK, parser.BOTTOMK, parser.LIMITK, parser.LIMIT_RATIO:
+	case parser.TOPK, parser.BOTTOMK, parser.LIMITK, parser.LIMIT_RATIO, parser.LATESTK:
 		result = make(Matrix, 0, len(seriess))
 		for _, ss := range seriess {
 			result = append(result, ss)
@@ -1804,10 +1804,12 @@ func (ev *evaluator) eval(ctx context.Context, expr parser.Expr) (parser.Value, 
 		var chkIter chunkenc.Iterator
 
 		// The last_over_time and first_over_time functions act like
-		// offset; thus, they should keep the metric name.  For all the
-		// other range vector functions, the only change needed is to
-		// drop the metric name in the output.
-		dropName := (e.Func.Name != "last_over_time" && e.Func.Name != "first_over_time")
+		// offset; thus, they should keep the metric name. latestk
+		// should keep the name because it returns a subset of
+		// unchanged input series. For all the other range vector
+		// functions, the only change needed is to drop the metric name
+		// in the output.
+		dropName := (e.Func.Name != "last_over_time" && e.Func.Name != "first_over_time" && e.Func.Name != "latestk")
 		vectorVals := make([]Vector, len(e.Args)-1)
 		for i, s := range selVS.Series {
 			if err := contextDone(ctx, "expression evaluation"); err != nil {
@@ -3289,7 +3291,7 @@ func (ev *evaluator) aggregation(e *parser.AggregateExpr, q float64, inputMatrix
 	return annos
 }
 
-// aggregationK evaluates topk, bottomk, limitk, or limit_ratio at one timestep on inputMatrix.
+// aggregationK evaluates topk, bottomk, limitk, limit_ratio or latest at one timestep on inputMatrix.
 // Output that has the same labels as the input, but just k of them per group.
 // seriesToResult maps inputMatrix indexes to groups indexes.
 // For an instant query, returns a Matrix in descending order for topk or ascending for bottomk, or without any order for limitk / limit_ratio.
@@ -3323,7 +3325,7 @@ seriesLoop:
 		var k int64
 		var r float64
 		switch op {
-		case parser.TOPK, parser.BOTTOMK, parser.LIMITK:
+		case parser.TOPK, parser.BOTTOMK, parser.LIMITK, parser.LATESTK:
 			k = min(int64(fParam), int64(len(inputMatrix)))
 			if k < 1 {
 				if enh.Ts != ev.endTimestamp {
@@ -3367,25 +3369,23 @@ seriesLoop:
 					heap: make(vectorByValueHeap, 1, k),
 				}
 				group.heap[0] = s
-			case parser.TOPK:
+			case parser.TOPK, parser.BOTTOMK, parser.LATESTK:
 				*group = groupedAggregation{
 					seen: true,
 					heap: make(vectorByValueHeap, 0, k),
 				}
 				if s.H != nil {
 					group.seen = false
-					annos.Add(annotations.NewHistogramIgnoredInAggregationInfo("topk", e.PosRange))
-				} else {
-					heap.Push(&group.heap, &s)
-				}
-			case parser.BOTTOMK:
-				*group = groupedAggregation{
-					seen: true,
-					heap: make(vectorByValueHeap, 0, k),
-				}
-				if s.H != nil {
-					group.seen = false
-					annos.Add(annotations.NewHistogramIgnoredInAggregationInfo("bottomk", e.PosRange))
+					var opname string
+					switch op {
+					case parser.TOPK:
+						opname = "topk"
+					case parser.BOTTOMK:
+						opname = "bottomk"
+					case parser.LATESTK:
+						opname = "latestk"
+					}
+					annos.Add(annotations.NewHistogramIgnoredInAggregationInfo(opname, e.PosRange))
 				} else {
 					heap.Push(&group.heap, &s)
 				}
@@ -3450,6 +3450,27 @@ seriesLoop:
 				heap.Push(&group.heap, &s)
 			}
 
+		case parser.LATESTK:
+			// Collect the 'k' values with the most recent timestamps into a heap,
+			// with the oldest timestamps at heap[0]
+			switch {
+			case s.H != nil:
+				// Ignore histogram sample and add info annotation. In theory it might be possible
+				// to support latest(k,...) for native histograms, but it's unclear how useful
+				// that'd be or how it'd work.
+				annos.Add(annotations.NewHistogramIgnoredInAggregationInfo("latest", e.PosRange))
+			case int64(len(group.heap)) < k:
+				// Heap isn't full yet
+				heap.Push(&group.heap, &s)
+			case group.heap[0].T < s.T:
+				// This new element is newer than the previous smallest element - overwrite that.
+				// Note that A NaN sample still counts as newer than a non-NaN sample.
+				group.heap[0] = s
+				if k > 1 {
+					heap.Fix(&group.heap, 0) // Maintain the heap invariant.
+				}
+			}
+
 		default:
 			panic(fmt.Errorf("expected aggregation operator but got %q", op))
 		}
@@ -3486,8 +3507,8 @@ seriesLoop:
 			continue
 		}
 		switch op {
-		case parser.TOPK:
-			// The heap keeps the lowest value on top, so reverse it.
+		case parser.TOPK, parser.LATESTK:
+			// The heap keeps the lowest or oldest value on top, so reverse it.
 			if len(aggr.heap) > 1 {
 				sort.Sort(sort.Reverse(aggr.heap))
 			}

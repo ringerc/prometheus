@@ -160,6 +160,7 @@ export const childDescription = (node: ASTNode, idx: number): string => {
         switch (node.op) {
           case "topk":
           case "bottomk":
+          case "latestk":
           case "limitk":
             return "k";
           case "quantile":
@@ -198,6 +199,7 @@ export const aggregatorsWithParam = [
   "bottomk",
   "quantile",
   "count_values",
+  "latestk",
   "limitk",
   "limit_ratio",
 ];

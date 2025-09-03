@@ -89,6 +89,23 @@ const describeAggregationType = (
       }
       return "calculates a quantile over the sample values of the input series";
 
+    case "latestk":
+      if (param === null || param.type !== "numberLiteral") {
+        return (
+          <>
+            returns the
+            <span className="promql-code promql-number">K</span> series
+	    with the most recent sample timestamps.
+          </>
+        );
+      }
+      return (
+        <>
+          returns the
+          <span className="promql-code promql-number">{param.val}</span> series
+	  with the most recent sample timestamps.
+        </>
+      );
     case "limitk":
       if (param === null || param.type !== "numberLiteral") {
         return (
