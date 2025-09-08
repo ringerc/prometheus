@@ -1,0 +1,196 @@
+# Tests for timestamp_if_value
+load 1m
+	rsrc_state{rsrc="a", state="starting"}      1x2
+	rsrc_state{rsrc="a", state="running"}       _x2 1x48 _x50
+	rsrc_state{rsrc="a", state="terminating"}   _x50 1x10
+	rsrc_state{rsrc="b", state="running"}       1x80
+	rsrc_state{rsrc="c", state="starting"}      1x2 0x98
+	rsrc_state{rsrc="c", state="running"}       0x2 1x48 0x50
+	rsrc_state{rsrc="c", state="terminating"}   0x50 1x10
+	rsrc_state{rsrc="d", state="terminating"}   _x50 1x10 _x5 stale
+	rsrc_state{rsrc="d", state="running"}       _x2 1x48 stale
+	rsrc_state{rsrc="d", state="starting"}      1x2 stale
+	ignore_histogram{rsrc="h", state="any"} {{schema:0 sum:10 count:10}}x11
+	ignore_histogram{rsrc="b", state="running"} {{schema:0 sum:10 count:10}}x100
+
+# timestamp_if_value discards __name__
+eval instant at 1m group by (__name__, rsrc) (timestamp_if_value(rsrc_state{}, 1))
+     {rsrc="a"} 1
+     {rsrc="b"} 1
+     {rsrc="c"} 1
+     {rsrc="d"} 1
+
+# __name__ can be preserved through timestamp_if_value() with relabel hacks
+eval instant at 1m group by (__name__, rsrc) (label_replace(timestamp_if_value(label_replace(rsrc_state{}, "save_name", "$1", "__name__", "^(.+$)"), 1), "__name__", "$1", "save_name", "^(.+)$"))
+     {__name__="rsrc_state", rsrc="a"} 1
+     {__name__="rsrc_state", rsrc="b"} 1
+     {__name__="rsrc_state", rsrc="c"} 1
+     {__name__="rsrc_state", rsrc="d"} 1
+
+# timestamp_if_value should discard histograms silently
+eval instant at 4m5s timestamp_if_value(ignore_histogram{}, 1)
+     # blank
+
+# Show that timestamp() over another expression, even a simple binary operation
+# with a scalar, discards the original sample timestamps and replaces them with
+# the evaluation timestamp. This is why it's not possible to achieve the desired
+# result with an expression like
+#
+#     topk(1, timestamp(rsrc_state{} == 1))
+#
+eval instant at 4m5s timestamp(rsrc_state{} == 1)
+     {rsrc="a", state="starting"} 245
+     {rsrc="a", state="running"} 245
+     {rsrc="b", state="running"} 245
+     {rsrc="c", state="running"} 245
+     {rsrc="d", state="running"} 245
+
+# Check timestamp_if_value's filtering, and show that it returns the true
+# sample timestamp not the evaluation timestamp
+eval instant at 1m5s timestamp_if_value(rsrc_state{}, 1)
+     {rsrc="a", state="starting"} 60
+     {rsrc="b", state="running"} 60
+     {rsrc="c", state="starting"} 60
+     {rsrc="d", state="starting"} 60
+
+# searching for 0-value series works too (not that you'd bother)
+eval instant at 1m5s timestamp_if_value(rsrc_state{}, 0)
+     {rsrc="c", state="running"} 60
+     {rsrc="c", state="terminating"} 60
+
+# Discard 0-valued series and use topk to return only the newest retained
+# series. At 1m there aren't any conflicting states yet, so this just checks
+# overall correctness of execution. The values must be the true sample
+# timestamps despite passing through topk(...)
+eval instant at 1m5s topk(1, timestamp_if_value(rsrc_state{}, 1)) by (rsrc)
+     {rsrc="a", state="starting"} 60
+     {rsrc="b", state="running"} 60
+     {rsrc="c", state="starting"} 60
+     {rsrc="d", state="starting"} 60
+
+# Data correctness check to assert that series timestamps are as expected at a
+# point after {rsrc="a", state="starting"} ended at 2m and at a point after
+# {rsrc="a", state="running"} began.
+eval instant at 4m5s timestamp(rsrc_state{})
+     {rsrc="a", state="starting"} 120
+     {rsrc="a", state="running"} 240
+     {rsrc="b", state="running"} 240
+     {rsrc="c", state="starting"} 240
+     {rsrc="c", state="running"} 240
+     {rsrc="c", state="terminating"} 240
+     {rsrc="d", state="running"} 240
+
+# {rsrc="a",state="starting"} is still visible in the lookback delta
+# it just has an older timestamp.
+eval instant at 4m5s timestamp_if_value(rsrc_state{}, 1)
+     {rsrc="a", state="starting"} 120
+     {rsrc="a", state="running"} 240
+     {rsrc="b", state="running"} 240
+     {rsrc="c", state="running"} 240
+     {rsrc="d", state="running"} 240
+
+# Show that if multiple series with the same {rsrc} label exist, the series
+# with the newest sample will be returned. All labels including state will be
+# retained in the output.
+#
+# This filters-out
+#
+#    {rsrc="a", state="starting"} 1 120
+#
+# which is non-stale and within the default lookback window of 5m, but for which
+# a newer sample exists for {rsrc="a"} with {state="running"} at t=240.
+#
+# We should see the true sample timestamps (240s) here not the eval timestamp (245s) too.
+#
+eval instant at 4m5s topk(1, timestamp_if_value(rsrc_state{}, 1)) by (rsrc)
+     {rsrc="a", state="running"} 240
+     {rsrc="b", state="running"} 240
+     {rsrc="c", state="running"} 240
+     {rsrc="d", state="running"} 240
+
+# by contast, using timestamp(rsrc_state{} == 1) will discard the original
+# sample timestamps, so we might see either of:
+#
+#     {rsrc="a", state="starting"} 245
+#     {rsrc="a", state="running"} 245
+#
+# Since this would produce a test with an unreliable result that depends on
+# details of input order, use topk(2,...) to show that this is possible.
+#
+eval instant at 4m5s topk(2, timestamp(rsrc_state{} == 1)) by (rsrc)
+     {rsrc="a", state="starting"} 245
+     {rsrc="a", state="running"} 245
+     {rsrc="b", state="running"} 245
+     {rsrc="c", state="running"} 245
+     {rsrc="d", state="running"} 245
+
+# querying "without" the non-identifyign "state" label, implicitly grouping on
+# all the identifying labels, works too.
+eval instant at 4m5s topk(2, timestamp(rsrc_state{} == 1)) without (state)
+     {rsrc="a", state="starting"} 245
+     {rsrc="a", state="running"} 245
+     {rsrc="b", state="running"} 245
+     {rsrc="c", state="running"} 245
+     {rsrc="d", state="running"} 245
+
+# Because timestamp_if_value bypasses most of the executor with special case
+# handling for its evaluation, it does not evaluate the second argument through
+# the executor. It only supports a numeric literal. It must fail with a runtime
+# error, not panic or crash, in this case.
+eval instant at 4m5s topk(1, timestamp_if_value(rsrc_state{}, scalar(vector(1)))) by (rsrc)
+    expect fail msg: expected second argument to be a number literal
+
+eval instant at 55m topk(1, timestamp_if_value(rsrc_state{}, 1)) by (rsrc)
+     {rsrc="a", state="terminating"} 3300
+     {rsrc="b", state="running"} 3300
+     {rsrc="c", state="terminating"} 3300
+     {rsrc="d", state="terminating"} 3300
+
+eval instant at 79m topk(1, timestamp_if_value(rsrc_state{}, 1)) by (rsrc)
+     {rsrc="b", state="running"} 4740
+
+# one remaining series within lookback interval ended at t=80
+eval instant at 82m topk(1, timestamp_if_value(rsrc_state{}, 1)) by (rsrc)
+     {rsrc="b", state="running"} 4800
+
+eval instant at 99m topk(1, timestamp_if_value(rsrc_state{}, 1)) by (rsrc)
+     # empty
+
+clear
+
+
+# Another example shows that with this function we can correctly query
+# enumerated states from kube-state-metrics even across a restart of the
+# monitoring instance, without having to emit 0-value placeholder series.
+# But the query will still work if such placeholder series exist, or even
+# if 0-placeholder and non-placeholder representations of the same series
+# exist in the tsdb at the same time.
+#
+# first scrape:
+load 1m
+	kube_customresource_status_phase{job="ksmold", instance="1.2.3.4", customresource_group="myteam.io", customresource_kind="Foo", customresource_version="v1", customresource_name="foo", phase="Pending"} 1
+	kube_customresource_status_phase{job="ksmold", instance="1.2.3.4", customresource_group="myteam.io", customresource_kind="Foo", customresource_version="v1", customresource_name="foo", phase="Bar"} _
+	kube_customresource_status_phase{job="ksmold", instance="1.2.3.4", customresource_group="myteam.io", customresource_kind="Foo", customresource_version="v1", customresource_name="foo", phase="Baz"} _
+	kube_customresource_status_phase{job="ksmnew", instance="2.3.4.5", customresource_group="myteam.io", customresource_kind="Foo", customresource_version="v1", customresource_name="foo", phase="Pending"} 1
+	kube_customresource_status_phase{job="ksmnew", instance="2.3.4.5", customresource_group="myteam.io", customresource_kind="Foo", customresource_version="v1", customresource_name="foo", phase="Bar"} 0
+	kube_customresource_status_phase{job="ksmnew", instance="2.3.4.5", customresource_group="myteam.io", customresource_kind="Foo", customresource_version="v1", customresource_name="foo", phase="Baz"} 0
+
+# second pass, only separated for readability. note change of instance _and_ state in one scrape.
+load 1m
+	kube_customresource_status_phase{job="ksmold", instance="3.4.5.6", customresource_group="myteam.io", customresource_kind="Foo", customresource_version="v1", customresource_name="foo", phase="Pending"} _ 0
+	kube_customresource_status_phase{job="ksmold", instance="3.4.5.6", customresource_group="myteam.io", customresource_kind="Foo", customresource_version="v1", customresource_name="foo", phase="Bar"} _ 1
+	kube_customresource_status_phase{job="ksmold", instance="3.4.5.6", customresource_group="myteam.io", customresource_kind="Foo", customresource_version="v1", customresource_name="foo", phase="Baz"} _ 0
+	kube_customresource_status_phase{job="ksmnew", instance="5.6.7.8", customresource_group="myteam.io", customresource_kind="Foo", customresource_version="v1", customresource_name="foo", phase="Pending"} _ _
+	kube_customresource_status_phase{job="ksmnew", instance="5.6.7.8", customresource_group="myteam.io", customresource_kind="Foo", customresource_version="v1", customresource_name="foo", phase="Bar"} _ 1
+	kube_customresource_status_phase{job="ksmnew", instance="5.6.7.8", customresource_group="myteam.io", customresource_kind="Foo", customresource_version="v1", customresource_name="foo", phase="Baz"} _ _
+
+eval instant at 5s timestamp_if_value(kube_customresource_status_phase{}, 1)
+	{job="ksmold", instance="1.2.3.4", customresource_group="myteam.io", customresource_kind="Foo", customresource_version="v1", customresource_name="foo", phase="Pending"} 0
+	{job="ksmnew", instance="2.3.4.5", customresource_group="myteam.io", customresource_kind="Foo", customresource_version="v1", customresource_name="foo", phase="Pending"} 0
+
+eval instant at 5s group by (customresource_group, customresource_kind, customresource_version, customresource_name, phase) (topk(1, timestamp_if_value(kube_customresource_status_phase{}, 1)) by (customresource_group, customresource_kind, customresource_version, customresource_name))
+	{customresource_group="myteam.io", customresource_kind="Foo", customresource_version="v1", customresource_name="foo", phase="Pending"} 1
+
+eval instant at 1m5s group by (customresource_group, customresource_kind, customresource_version, customresource_name, phase) (topk(1, timestamp_if_value(kube_customresource_status_phase{}, 1)) by (customresource_group, customresource_kind, customresource_version, customresource_name))
+	{customresource_group="myteam.io", customresource_kind="Foo", customresource_version="v1", customresource_name="foo", phase="Bar"} 1
+

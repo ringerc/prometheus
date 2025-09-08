@@ -135,6 +135,7 @@ export const functionSignatures: Record<string, Func> = {
   tanh: { name: 'tanh', argTypes: [valueType.vector], variadic: 0, returnType: valueType.vector },
   time: { name: 'time', argTypes: [], variadic: 0, returnType: valueType.scalar },
   timestamp: { name: 'timestamp', argTypes: [valueType.vector], variadic: 0, returnType: valueType.vector },
+  timestamp_if_value: { name: 'timestamp', argTypes: [valueType.vector, valueType.scalar], variadic: 0, returnType: valueType.vector },
   vector: { name: 'vector', argTypes: [valueType.scalar], variadic: 0, returnType: valueType.vector },
   year: { name: 'year', argTypes: [valueType.vector], variadic: 1, returnType: valueType.vector },
 };

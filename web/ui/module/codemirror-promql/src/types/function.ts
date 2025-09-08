@@ -594,6 +594,12 @@ const promqlFunctions: { [key: number]: PromQLFunction } = {
     variadic: 0,
     returnType: ValueType.vector,
   },
+  [TimestampIfValue]: {
+    name: 'timestamp_if_value',
+    argTypes: [ValueType.vector, ValueType.scalar],
+    variadic: 0,
+    returnType: ValueType.vector,
+  },
   [Vector]: {
     name: 'vector',
     argTypes: [ValueType.scalar],

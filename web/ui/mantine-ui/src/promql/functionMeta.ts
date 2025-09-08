@@ -98,6 +98,7 @@ export const functionDescriptions: Record<string, string> = {
   sum_over_time: 'calculate the sum over the values of input series over time',
   time: 'return the Unix timestamp at the current evaluation time',
   timestamp: 'return the Unix timestamp for the samples in the input vector',
+  timestamp_if_value: 'filter out samples that do not match the value, return unix timestamp for remaining samples',
   vector: 'convert a scalar value into a single-element series vector',
   year: 'return the year for provided timestamps',
 };

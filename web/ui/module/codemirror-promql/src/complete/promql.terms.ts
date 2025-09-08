@@ -524,6 +524,12 @@ export const functionIdentifierTerms = [
     type: 'function',
   },
   {
+    label: 'timestamp_if_value',
+    detail: 'function',
+    info: 'Discard samples in the input vector that are unequal to the supplied filter value then return the Unix timestamp for the remaining samples',
+    type: 'function',
+  },
+  {
     label: 'vector',
     detail: 'function',
     info: 'Convert a scalar value into a single-element series vector',

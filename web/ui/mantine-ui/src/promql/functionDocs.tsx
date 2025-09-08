@@ -2719,6 +2719,19 @@ const funcDocs: Record<string, React.ReactNode> = {
       </p>
     </>
   ),
+  timestamp_if_value: (
+    <>
+      <p>
+        <code>timestamp(v instant-vector, match scalar)</code> discards samples of the input vector with values that do not
+        exactly equal <code>match</code>, then returns the timestamp of each of the samples of the given
+        vector as the number of seconds since January 1, 1970 UTC. Histogram samples are discarded.
+      </p>
+      <p>
+        <code>timestamp_if_value(v, 1)</code> works like one might intuitively expect <code>timestamp(v == 1)</code> to,
+        but it will correctly return the actual sample timestamp instead of the timestamp of the evaluation.
+      </p>
+    </>
+  ),
   vector: (
     <>
       <p>

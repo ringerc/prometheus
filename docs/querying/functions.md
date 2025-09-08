@@ -826,6 +826,93 @@ expression is to be evaluated.
 the given vector as the number of seconds since January 1, 1970 UTC. It acts on
 float and histogram samples in the same way.
 
+**Warning**: `timestamp()` is only useful when applied to a simple
+instant-vector selector (e.g. `metric_name`, `metric_name{label="matcher"}`,
+`{__name__=~"^metric_name.*"}`, etc). If `v` is any expression other than an
+instant-vector selector, the timestamps returned will be the evaluation time of
+the query or step, _not_ the sample timestamps of the input series. So an
+expression like `timestamp(vec{} == 1)` will return the value of `time()` for
+each output series.
+
+## `timestamp_if_value()`
+
+`timestamp(v instant-vector, s scalar)` filters the input vector `v` to retain
+only samples with value equal to `s`, then returns the timestamp of each of the
+samples of the given vector as the number of seconds since January 1, 1970 UTC.
+
+`s` must be a numeric literal, and _should_ be an integer to avoid any
+potential complications issues with comparing floating point values for
+equality. Expressions yielding scalars are not supported.
+
+Unlike `timestamp(...)`, this function silently discards native histogram samples.
+
+### Using `timestamp_if_value(...)` for querying state-sets
+
+`timestamp_if_value` is typically combined with `topk` to pick the most recent sample
+from a set of related series, e.g.:
+
+    topk(1, timestamp_if_value(vec{}, 1)) by (identifying_labels)
+
+It is intended for queries that consume state-sets, where a set of series share
+a common identifying label-set and one or more auxilliary labels to carry a
+string value. This is typically a short string identifying a state or phase,
+from a constrained set of possible values. By using `timestamp_if_value(...)`
+it is possible to query a set of series with a common set of identifying labels
+and obtain as a result the labels with the most recent value for the auxillary
+labels.
+
+For example, given the input sequence that contains one series `rsrc="a"` that
+only has 1-valued series for the active state, and another series-set
+`rsrc="b"` that uses the traditional state-set representation of also sending
+0-valued series for every possible inactive state:
+
+    rsrc_state{rsrc="a", state="starting"}    1   60
+    rsrc_state{rsrc="b", state="starting"}    1 60
+    rsrc_state{rsrc="b", state="running"}     0  60
+    rsrc_state{rsrc="b", state="terminating"} 0  60
+   
+    rsrc_state{rsrc="a", state="running"}     1 120
+    rsrc_state{rsrc="b", state="starting"}    0  60
+    rsrc_state{rsrc="b", state="running"}     1  60
+    rsrc_state{rsrc="b", state="terminating"} 0  60
+
+Then `timestamp_if_value(rsrc_state{}, 1)` run at t=2m5s will yield:
+
+    rsrc_state{rsrc="a", state="starting"}    60  125
+    rsrc_state{rsrc="a", state="running"}     120 125
+    rsrc_state{rsrc="b", state="starting"}    60  125
+    rsrc_state{rsrc="b", state="running"}     60  125
+    rsrc_state{rsrc="b", state="terminating"} 60
+
+so `topk(1, timestamp_if_value(rsrc_state{}, 1)) by (rsrc)` run at 2=1m5s will
+yield:
+
+    rsrc_state{rsrc="a", state="running"} 60 65
+    rsrc_state{rsrc="b", state="running"} 60 65
+
+whereas none of these queries will produce correct results for both series with
+0-valued placeholders and series without:
+
+    # incorrect for rsrc="b", will return any one unpredictable and semi-random
+    # series for b because all their timestamps are the same and the values are
+    # ignored.
+    topk(1, timestamp(rsrc_state{}))
+
+    # incorrect for rsrc="a", will return both state series when run within the
+    # 5min lookback delta of a state change:
+    rsrc_state{} == 1                        
+
+    # incorrect for rsrc="a", because timestamp() on anything except a simple
+    # vector selector will return the evaluation timestamp not the sample timestamp
+    # so both series for "a" will have the same timestamp.
+    topk(1, timestamp(rsrc_state{} == 1))
+
+This function may also be used to emulate string-valued metrics by carrying the
+intended value as a label. However, care must be taken with this because Prometheus's
+memory consumption and on-disk TSDB index sizes will be significantly increased by
+long, rapidly changing values for such metrics. To limit memory impact the
+possible set of label values and their lengths should generally be constained.
+
 ## `vector()`
 
 `vector(s scalar)` converts the scalar `s` to a float sample and returns it as

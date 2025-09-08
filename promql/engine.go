@@ -1711,7 +1711,7 @@ func (ev *evaluator) eval(ctx context.Context, expr parser.Expr) (parser.Value, 
 
 	case *parser.Call:
 		call := FunctionCalls[e.Func.Name]
-		if e.Func.Name == "timestamp" {
+		if e.Func.Name == "timestamp" || e.Func.Name == "timestamp_if_value" {
 			// Matrix evaluation always returns the evaluation time,
 			// so this function needs special handling when given
 			// a vector selector.
@@ -2216,14 +2216,18 @@ func (ev *evaluator) rangeEvalTimestampFunctionOverVectorSelector(ctx context.Co
 		vec := make(Vector, 0, len(vs.Series))
 		for i, s := range vs.Series {
 			it := seriesIterators[i]
-			t, _, _, ok := ev.vectorSelectorSingle(it, vs.Offset, enh.Ts)
+			t, f, h, ok := ev.vectorSelectorSingle(it, vs.Offset, enh.Ts)
 			if !ok {
 				continue
 			}
 
-			// Note that we ignore the sample values because call only cares about the timestamp.
+			// Value is passed through for filtering when used by
+			// timestamp_if_value(); it'll be discarded for
+			// timestamp()
 			vec = append(vec, Sample{
 				Metric: s.Labels(),
+				F:      f,
+				H:      h,
 				T:      t,
 			})
 

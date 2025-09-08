@@ -1251,6 +1251,38 @@ func funcTimestamp(vectorVals []Vector, _ Matrix, _ parser.Expressions, enh *Eva
 	return enh.Out, nil
 }
 
+// === timestamp_if_value(Vector parser.ValueTypeVector, value Scalar) (Vector, Annotations) ===
+func funcTimestampIfValue(vectorVals []Vector, _ Matrix, ex parser.Expressions, enh *EvalNodeHelper) (Vector, annotations.Annotations) {
+	vec := vectorVals[0]
+	valueParam, ok := ex[1].(*parser.NumberLiteral) // Ensure the second argument is a number literal.
+	if !ok {
+		// This should never happen as the parser already checks this.
+		panic("expected second argument to be a number literal")
+	}
+	val := valueParam.Val
+	for _, el := range vec {
+		// Histograms are silently ignored.
+		if el.H != nil {
+			continue
+		}
+		//
+		if el.F != val {
+			continue
+		}
+		// __name__ isn't meaningful since we're replacing the value with the timestamp of it.
+		if !enh.enableDelayedNameRemoval {
+			el.Metric = el.Metric.DropReserved(schema.IsMetadataLabel)
+		}
+		// The returned series value is replaced with the timestamp of the original series.
+		enh.Out = append(enh.Out, Sample{
+			Metric:   el.Metric,
+			F:        float64(el.T) / 1000,
+			DropName: true,
+		})
+	}
+	return enh.Out, nil
+}
+
 // We get incorrect results if this function is inlined; see https://github.com/prometheus/prometheus/issues/16714.
 //
 //go:noinline
@@ -1901,6 +1933,7 @@ var FunctionCalls = map[string]FunctionCall{
 	"tanh":                         funcTanh,
 	"time":                         funcTime,
 	"timestamp":                    funcTimestamp,
+	"timestamp_if_value":           funcTimestampIfValue,
 	"vector":                       funcVector,
 	"year":                         funcYear,
 }
@@ -1917,7 +1950,8 @@ var AtModifierUnsafeFunctions = map[string]struct{}{
 	"predict_linear": {}, "time": {},
 	// Uses timestamp of the argument for the result,
 	// hence unsafe to use with @ modifier.
-	"timestamp": {},
+	"timestamp":          {},
+	"timestamp_if_value": {},
 }
 
 type vectorByValueHeap Vector
